@@ -1,13 +1,14 @@
 async function getOrders(offset, limit) {
     let url = "https://shopee.vn/api/v4/order/get_all_order_and_checkout_list?limit=" + limit + "&offset=" + offset;
-    var ordersData = (await (await fetch(url)).json()).data.order_data;
+    const response = await fetch(url);
+    const json = await response.json();
 
-    var detailList = ordersData.details_list;
-    if (detailList) {
-        return detailList;
-    } else {
+    if (!json || !json.new_data || !json.new_data.order_or_checkout_data) {
+        console.warn('Unexpected response structure:', json);
         return [];
     }
+
+    return json.new_data.order_or_checkout_data || [];
 }
 
 function _VietNamCurrency(number) {
@@ -18,13 +19,10 @@ async function getAllOrders() {
     const limit = 20;
     let offset = 0;
     let allOrders = [];
-    let yearlySpending = {}; // To store spending by year
-    let unknownSpending = { spent: 0, orders: 0, items: 0 }; // For orders with unknown time
+    let yearlySpending = {};
 
     allOrders.push(
-        [
-            'Ngày giờ\tTổng tiền', 'Tên chung', 'Số lượng', 'Trạng thái', 'Tên shop', 'Chi tiết'
-        ].join('\t')
+        ['Ngày giờ\tTổng tiền', 'Tên chung', 'Số lượng', 'Trạng thái', 'Tên shop', 'Chi tiết'].join('\t')
     );
 
     let totalSpent = 0;
@@ -37,11 +35,14 @@ async function getAllOrders() {
         if (data.length == 0) break;
 
         for (const item of data) {
-            const infoCard = item.info_card;
-            const listType = item.list_type;
-            const ctime = item.shipping?.tracking_info?.ctime;
+            const detail = item.order_list_detail;
+            if (!detail) continue;
+
+            const infoCard = detail.info_card;
+            const listType = detail.list_type;
+            const ctime = detail.shipping?.tracking_info?.ctime;
             const orderDate = ctime ? new Date(ctime * 1000) : null;
-            const year = orderDate ? orderDate.getFullYear() : currentYear || "Unknown time";
+            const year = orderDate ? orderDate.getFullYear() : "Unknown time";
             const formattedDate = orderDate ? orderDate.toLocaleString('vi-VN') : "Unknown";
 
             if (!yearlySpending[year]) {
@@ -61,7 +62,7 @@ async function getAllOrders() {
                 case 8: strListType = "Đang giao"; break;
                 case 9: strListType = "Chờ thanh toán"; break;
                 case 12: strListType = "Trả hàng"; break;
-                default: strListType = "Không rõ"; break;
+                default: strListType = "Không rõ (" + listType + ")"; break;
             }
 
             const productCount = infoCard.product_count;
@@ -70,7 +71,13 @@ async function getAllOrders() {
             const orderCard = infoCard.order_list_cards[0];
             const shopName = orderCard.shop_info.username + " - " + orderCard.shop_info.shop_name;
             const products = orderCard.product_info.item_groups;
-            const productSummary = products.map(product => product.items.map(item => item.name.replace(/\n/g, " ") + "--amount: " + item.amount + "--price: " + _VietNamCurrency(item.item_price)).join(', ')).join('; ');
+            const productSummary = products.map(group =>
+                group.items.map(i =>
+                    i.name.replace(/\n/g, " ") +
+                    "--amount: " + i.amount +
+                    "--price: " + _VietNamCurrency(i.item_price / 1e5)
+                ).join(', ')
+            ).join('; ');
             const name = products[0].items[0].name.replace(/\n/g, " ");
 
             if (listType != 4 && listType != 12) {
@@ -84,11 +91,11 @@ async function getAllOrders() {
 
             totalOrders += 1;
             totalItems += productCount;
-            const subTotalNative = _VietNamCurrency(subTotal);
 
             allOrders.push(
                 [
-                    `${formattedDate}\t${subTotalNative}`, name, productCount, strListType, shopName, productSummary
+                    `${formattedDate}\t${_VietNamCurrency(subTotal)}`,
+                    name, productCount, strListType, shopName, productSummary
                 ].join('\t')
             );
         }
@@ -97,34 +104,26 @@ async function getAllOrders() {
         offset += limit;
     }
 
-    allOrders.push("\n\n-------------------------" +
-                   "\nChi tiêu theo năm\n" +
-                   "-------------------------");
+    allOrders.push("\n\n-------------------------\nChi tiêu theo năm\n-------------------------");
 
     for (const year in yearlySpending) {
-        const currentYear = new Date().getFullYear();
-        if (year === "Unknown time" || (!isNaN(year) && year <= currentYear)) { // Include valid years and unknown time
-            allOrders.push(
-                `${year === "Unknown time" ? "Unknown time" : `Năm ${year}`}:
+        allOrders.push(
+            `${year === "Unknown time" ? "Unknown time" : `Năm ${year}`}:
   - Tổng tiền chi tiêu: ${_VietNamCurrency(yearlySpending[year].spent)}
   - Tổng đơn hàng: ${yearlySpending[year].orders} đơn hàng
-  - Tổng sản phẩm: ${yearlySpending[year].items} sản phẩm
-`
-            );
-        }
+  - Tổng sản phẩm: ${yearlySpending[year].items} sản phẩm`
+        );
     }
 
-    allOrders.push("\n-------------------------" +
-                   "\nTổng chi tiêu tất cả các năm\n-------------------------");
-
+    allOrders.push("\n-------------------------\nTổng chi tiêu tất cả các năm\n-------------------------");
     allOrders.push(
         `Tổng tiền chi tiêu: ${_VietNamCurrency(totalSpent)}\n` +
         `Tổng đơn hàng: ${totalOrders} đơn hàng\n` +
-        `Tổng sản phẩm: ${totalItems} sản phẩm\n`
+        `Tổng sản phẩm: ${totalItems} sản phẩm`
     );
 
     var text = allOrders.join('\r\n');
-    document.write('<textarea>' + text + '</textarea>');
+    document.write('<textarea style="width:100%;height:100vh">' + text + '</textarea>');
 }
 
 getAllOrders();
